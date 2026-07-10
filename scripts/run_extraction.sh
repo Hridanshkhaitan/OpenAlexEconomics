@@ -1,17 +1,20 @@
 #!/bin/bash
 #
-# Download OpenAlex Economics works for a range of years, running several years
-# in parallel. Each year is handled by extract_econ.py and written to its own
-# gzip JSONL archive file.
+# Download OpenAlex Economics works for a range of years, one year at a time.
+# Each year is handled by extract_econ.py and written to its own gzip JSONL
+# archive file.
+#
+# Years run SEQUENTIALLY on purpose: OpenAlex meters usage as a daily credit
+# quota, so parallel workers only race each other into the same limit. A
+# single worker uses the whole day's quota by itself, and extract_econ.py
+# sleeps over the midnight-UTC quota reset when needed -- so this script can
+# simply be left running in tmux for several days until all years are done.
 #
 # Run this on a Narval LOGIN node (compute nodes have no internet access),
-# ideally inside a tmux/screen session so it survives a disconnect.
+# inside a tmux/screen session so it survives a disconnect.
 #
 # Usage:
-#   ./run_extraction.sh 1960 2025
-#
-# MAX_PARALLEL controls how many years download at once. Keep it modest so the
-# combined request rate stays within OpenAlex's ~10 requests/second polite pool.
+#   ./run_extraction.sh 1647 2025
 
 set -euo pipefail
 
@@ -25,7 +28,6 @@ EXTRACT_PY="$SCRIPT_DIR/../py_code/extract_econ.py"
 
 OUT_DIR=/scratch/hridansh/openalex_econ_download/archive
 LOG_DIR=/scratch/hridansh/openalex_econ_download/logs
-MAX_PARALLEL=3   # keep the combined request rate within the polite pool
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
@@ -35,16 +37,14 @@ for year in $(seq "$START_YEAR" "$END_YEAR"); do
         echo "skipping year $year (already complete)"
         continue
     fi
-    # Wait until fewer than MAX_PARALLEL background jobs are running.
-    while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do
-        wait -n
-    done
-    echo "launching year $year"
+    echo "starting year $year"
     # -u = unbuffered output, so per-year logs update live (and nothing is lost
-    # if a worker is interrupted).
-    python -u "$EXTRACT_PY" --year "$year" --out-dir "$OUT_DIR" \
-        > "$LOG_DIR/econ_${year}.log" 2>&1 &
+    # if a worker is interrupted). A failed year is reported but does not stop
+    # the remaining years; re-running the same command later retries it.
+    if ! python -u "$EXTRACT_PY" --year "$year" --out-dir "$OUT_DIR" \
+            2>&1 | tee "$LOG_DIR/econ_${year}.log"; then
+        echo "year $year FAILED -- see $LOG_DIR/econ_${year}.log"
+    fi
 done
 
-wait
 echo "All years complete."
