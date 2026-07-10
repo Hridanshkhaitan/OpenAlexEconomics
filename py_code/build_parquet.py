@@ -100,6 +100,12 @@ def build_year(archive_path, out_dir):
         for line in f:
             rows.append(extract_work(json.loads(line)))
 
+    # Some years have no Economics works; their archive is empty. Skip them so
+    # we don't write an empty, schema-less Parquet partition.
+    if not rows:
+        print(f"{os.path.basename(archive_path)}: 0 rows (skipped)")
+        return
+
     df = pd.DataFrame(rows)
     part_dir = os.path.join(out_dir, f"publication_year={year}")
     os.makedirs(part_dir, exist_ok=True)
