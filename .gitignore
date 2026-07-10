@@ -1,0 +1,26 @@
+# Data stays on Narval — never commit
+data/
+*.csv
+*.parquet
+*.jsonl
+*.gz
+
+# Logs and SLURM output
+logs/
+*.out
+*.err
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets — never commit credentials
+.env
+*api_key*
+*credentials*
+
+# Editor / OS
+.vscode/
+.DS_Store
