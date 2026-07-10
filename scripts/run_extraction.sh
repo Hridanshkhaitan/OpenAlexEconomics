@@ -40,7 +40,9 @@ for year in $(seq "$START_YEAR" "$END_YEAR"); do
         wait -n
     done
     echo "launching year $year"
-    python "$EXTRACT_PY" --year "$year" --out-dir "$OUT_DIR" \
+    # -u = unbuffered output, so per-year logs update live (and nothing is lost
+    # if a worker is interrupted).
+    python -u "$EXTRACT_PY" --year "$year" --out-dir "$OUT_DIR" \
         > "$LOG_DIR/econ_${year}.log" 2>&1 &
 done
 
