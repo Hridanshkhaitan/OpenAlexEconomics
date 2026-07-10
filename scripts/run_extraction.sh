@@ -25,11 +25,16 @@ EXTRACT_PY="$SCRIPT_DIR/../py_code/extract_econ.py"
 
 OUT_DIR=/scratch/hridansh/openalex_econ_download/archive
 LOG_DIR=/scratch/hridansh/openalex_econ_download/logs
-MAX_PARALLEL=8
+MAX_PARALLEL=3   # keep the combined request rate within the polite pool
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
 for year in $(seq "$START_YEAR" "$END_YEAR"); do
+    # Skip years already downloaded in full (a .done marker was written).
+    if [ -f "$OUT_DIR/econ_${year}.done" ]; then
+        echo "skipping year $year (already complete)"
+        continue
+    fi
     # Wait until fewer than MAX_PARALLEL background jobs are running.
     while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do
         wait -n

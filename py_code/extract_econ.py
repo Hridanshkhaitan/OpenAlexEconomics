@@ -38,14 +38,18 @@ MAILTO = "hridanshkhaitan@gmail.com"
 ECONOMICS_FIELD_ID = 20
 
 API_URL = "https://api.openalex.org/works"
-PER_PAGE = 200      # Maximum works OpenAlex returns per call.
-MAX_RETRIES = 5     # Retries per page before giving up.
+PER_PAGE = 200        # Maximum works OpenAlex returns per call.
+MAX_RETRIES = 10      # Retries per page before giving up on the year.
+MAX_WAIT = 60         # Cap on backoff wait between retries (seconds).
+REQUEST_PAUSE = 0.15  # Polite pause after each successful call (seconds).
 
 
 def fetch_page(year, cursor):
     """Fetch one page of results from the OpenAlex API.
 
-    Retries with exponential backoff on rate-limit (429) or server (5xx) errors.
+    Retryable failures (rate-limit 429, server 5xx, network errors) are retried
+    with exponential backoff, honouring the server's Retry-After header when it
+    is provided. This keeps a single year from dying on a transient rate limit.
 
     Args:
         year: Publication year to filter on.
@@ -55,7 +59,7 @@ def fetch_page(year, cursor):
         The parsed JSON response as a dict.
 
     Raises:
-        requests.HTTPError: If the request keeps failing after MAX_RETRIES.
+        RuntimeError: If the page still cannot be fetched after MAX_RETRIES.
     """
     params = {
         "filter": f"publication_year:{year},primary_topic.field.id:fields/{ECONOMICS_FIELD_ID}",
@@ -63,14 +67,32 @@ def fetch_page(year, cursor):
         "cursor": cursor,
         "mailto": MAILTO,
     }
+    wait = 2
     for attempt in range(1, MAX_RETRIES + 1):
-        response = requests.get(API_URL, params=params, timeout=60)
+        try:
+            response = requests.get(API_URL, params=params, timeout=60)
+        except requests.RequestException as exc:
+            print(f"  [{year}] network error ({exc}); retry {attempt}/{MAX_RETRIES} in {wait}s")
+            time.sleep(wait)
+            wait = min(wait * 2, MAX_WAIT)
+            continue
+
         if response.status_code == 200:
             return response.json()
-        wait = 2 ** attempt
-        print(f"  [{year}] HTTP {response.status_code} (attempt {attempt}); retrying in {wait}s")
-        time.sleep(wait)
-    response.raise_for_status()
+
+        # 429 = rate limited, 5xx = transient server error: wait and retry.
+        if response.status_code == 429 or response.status_code >= 500:
+            retry_after = response.headers.get("Retry-After")
+            pause = int(retry_after) if retry_after and retry_after.isdigit() else wait
+            print(f"  [{year}] HTTP {response.status_code}; retry {attempt}/{MAX_RETRIES} in {pause}s")
+            time.sleep(pause)
+            wait = min(wait * 2, MAX_WAIT)
+            continue
+
+        # Any other 4xx is a real error (bad request etc.) -- do not retry.
+        response.raise_for_status()
+
+    raise RuntimeError(f"[{year}] still failing after {MAX_RETRIES} retries; aborting this year")
 
 
 def extract_year(year, out_dir):
@@ -82,6 +104,7 @@ def extract_year(year, out_dir):
     """
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"econ_{year}.jsonl.gz")
+    done_path = os.path.join(out_dir, f"econ_{year}.done")
 
     cursor = "*"
     total = 0
@@ -102,7 +125,12 @@ def extract_year(year, out_dir):
             if calls % 25 == 0:   # progress roughly every 5,000 works
                 print(f"[{year}] {total} works | {int(time.time() - start)}s")
             cursor = page.get("meta", {}).get("next_cursor")
+            time.sleep(REQUEST_PAUSE)   # stay comfortably within the rate limit
 
+    # Write a completion marker only after the whole year finished cleanly. Its
+    # presence lets run_extraction.sh skip already-finished years on a re-run.
+    with open(done_path, "w") as marker:
+        marker.write(f"{total}\n")
     print(f"[{year}] DONE: {total} works in {int(time.time() - start)}s -> {out_path}")
 
 
