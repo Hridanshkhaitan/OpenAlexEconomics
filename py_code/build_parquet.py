@@ -120,7 +120,9 @@ def main():
     parser.add_argument("--out-dir", required=True, help="Output directory for the Parquet dataset.")
     args = parser.parse_args()
 
-    archives = sorted(glob.glob(os.path.join(args.archive_dir, "econ_*.jsonl.gz")))
+    # "**" also matches archives organized into subfolders (e.g. one per century).
+    archives = sorted(glob.glob(os.path.join(args.archive_dir, "**", "econ_*.jsonl.gz"),
+                                recursive=True))
     if not archives:
         print(f"No archive files found in {args.archive_dir}")
         return

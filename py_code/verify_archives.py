@@ -48,7 +48,9 @@ def main():
     args = parser.parse_args()
 
     all_ok = True
-    for done in sorted(glob.glob(os.path.join(args.archive_dir, "econ_*.done"))):
+    # "**" also matches archives organized into subfolders (e.g. one per century).
+    for done in sorted(glob.glob(os.path.join(args.archive_dir, "**", "econ_*.done"),
+                                 recursive=True)):
         expected = int(open(done).read().strip())
         result = verify_year(done.replace(".done", ".jsonl.gz"), expected)
         status = "OK  " if result["passed"] else "FAIL"
@@ -57,7 +59,8 @@ def main():
               f"(marker {result['expected']:,}) | unique {result['unique']:,} | "
               f"wrong year/field: {result['wrong']}")
 
-    unfinished = [f for f in glob.glob(os.path.join(args.archive_dir, "econ_*.jsonl.gz"))
+    unfinished = [f for f in glob.glob(os.path.join(args.archive_dir, "**", "econ_*.jsonl.gz"),
+                                       recursive=True)
                   if not os.path.exists(f.replace(".jsonl.gz", ".done"))]
     for f in sorted(unfinished):
         print(f"IN PROGRESS / PARTIAL (no .done marker): {os.path.basename(f)}")
