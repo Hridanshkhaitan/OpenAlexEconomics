@@ -2,9 +2,17 @@
 Build a curated, analysis-ready Parquet dataset from the OpenAlex archives.
 
 Reads the gzip JSON Lines archives produced by extract_econ.py and extracts a
-set of commonly used, typed columns. The output is written as Parquet,
-partitioned by publication_year, so a single year or a single column can be
-read without loading the whole corpus.
+set of commonly used, typed columns. The output is written as one Parquet file
+per year, grouped into century folders, mirroring the archive layout:
+
+    <out-dir>/1900s/1998.parquet
+    <out-dir>/2000s/2020.parquet
+
+Every file keeps a publication_year column, so files are self-describing and
+the whole dataset (or any subset) reads with a single pandas call:
+
+    df = pd.read_parquet("<out-dir>")                                  # everything
+    df = pd.read_parquet("<out-dir>", filters=[("publication_year", ">=", 2000)])
 
 The raw archives remain the source of truth: to add a new column later, extend
 extract_work() and re-run this script -- no re-download is needed.
@@ -87,11 +95,13 @@ def extract_work(work):
 
 
 def build_year(archive_path, out_dir):
-    """Convert one archive file into one Parquet partition.
+    """Convert one archive file into one Parquet file, in its century folder.
+
+    The output is <out-dir>/<century>s/<year>.parquet (e.g. 2000s/2020.parquet).
 
     Args:
         archive_path: Path to an econ_<year>.jsonl.gz archive file.
-        out_dir: Root output directory for the partitioned Parquet dataset.
+        out_dir: Root output directory for the Parquet dataset.
     """
     year = re.search(r"econ_(\d+)\.jsonl\.gz$", os.path.basename(archive_path)).group(1)
 
@@ -101,19 +111,15 @@ def build_year(archive_path, out_dir):
             rows.append(extract_work(json.loads(line)))
 
     # Some years have no Economics works; their archive is empty. Skip them so
-    # we don't write an empty, schema-less Parquet partition.
+    # we don't write an empty, schema-less Parquet file.
     if not rows:
         print(f"{os.path.basename(archive_path)}: 0 rows (skipped)")
         return
 
     df = pd.DataFrame(rows)
-    # publication_year is the partition key (the folder name already encodes it),
-    # so drop the redundant in-file column. Keeping both makes the same field
-    # appear twice with different types and breaks pandas.read_parquet(dir).
-    df = df.drop(columns=["publication_year"])
-    part_dir = os.path.join(out_dir, f"publication_year={year}")
-    os.makedirs(part_dir, exist_ok=True)
-    out_path = os.path.join(part_dir, "part-000.parquet")
+    century_dir = os.path.join(out_dir, f"{int(year) // 100 * 100}s")
+    os.makedirs(century_dir, exist_ok=True)
+    out_path = os.path.join(century_dir, f"{year}.parquet")
     df.to_parquet(out_path, engine="pyarrow", compression="zstd", index=False)
     print(f"{os.path.basename(archive_path)}: {len(df)} rows -> {out_path}")
 
