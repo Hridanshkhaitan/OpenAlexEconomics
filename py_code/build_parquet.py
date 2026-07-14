@@ -107,6 +107,10 @@ def build_year(archive_path, out_dir):
         return
 
     df = pd.DataFrame(rows)
+    # publication_year is the partition key (the folder name already encodes it),
+    # so drop the redundant in-file column. Keeping both makes the same field
+    # appear twice with different types and breaks pandas.read_parquet(dir).
+    df = df.drop(columns=["publication_year"])
     part_dir = os.path.join(out_dir, f"publication_year={year}")
     os.makedirs(part_dir, exist_ok=True)
     out_path = os.path.join(part_dir, "part-000.parquet")
