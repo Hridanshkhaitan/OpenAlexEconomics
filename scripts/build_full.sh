@@ -18,7 +18,7 @@ set -euo pipefail
 module load python/3.11 arrow/17.0.0
 source /project/def-kmcel/hridansh/econ_env/bin/activate
 
-python /project/def-kmcel/hridansh/openalex_econ/py_code/build_parquet_full.py \
+python /project/def-kmcel/hridansh/openalex_econ/py_code/build_parquet.py \
     --archive-dir /project/def-kmcel/hridansh/openalex_econ/data/archive \
     --out-dir     /scratch/hridansh/openalex_econ_download/parquet_full
 

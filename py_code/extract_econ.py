@@ -1,33 +1,23 @@
 """
-Extract OpenAlex works for a single publication year in the Economics field.
+Download OpenAlex works for one publication year in the Economics field.
 
-This script queries the OpenAlex API for every work whose primary topic falls
-in the "Economics, Econometrics and Finance" field (OpenAlex field id 20) for
-one publication year, and writes the raw JSON of each work -- one record per
-line -- to a gzip-compressed JSON Lines file. This file is the immutable
-"archive" layer: it is never edited after download.
+Queries the OpenAlex API for every work whose primary topic is in the
+"Economics, Econometrics and Finance" field (id 20) for one year, and writes the
+raw JSON of each work -- one record per line -- to a gzip JSON Lines archive.
+The archive is the immutable source layer; build_parquet.py turns it into the
+analysis dataset, so new columns can be added later without re-downloading.
 
-Analysis-ready columns are produced separately by build_parquet.py, which reads
-these archive files. Keeping the raw archive means new columns can be added
-later by re-processing the archive, without re-downloading from the API.
+Run on a Narval LOGIN node (compute nodes have no internet), inside tmux so it
+survives a disconnect. run_extraction.sh drives this over a range of years.
 
-Run this on a Narval LOGIN node (compute nodes have no internet access),
-ideally inside a tmux/screen session so it survives a disconnect.
+    python extract_econ.py --year 2020 --out-dir /scratch/.../archive
 
-Usage:
-    python extract_econ.py --year 2020 --out-dir /scratch/hridansh/openalex_econ_download/archive
-
-API key and daily quota:
-    OpenAlex meters API usage in daily credits (a "list" call costs 1 credit;
-    a free account key grants 10,000/day vs only 1,000/day without a key).
-    The key is read from the OPENALEX_API_KEY environment variable, or from
-    the file ~/.openalex_api_key if the variable is not set. It is never
-    stored in this repository.
-
-    Before downloading a year, the script estimates how many calls the year
-    needs; if today's remaining quota is too small, it sleeps until the quota
-    resets (midnight UTC) and then starts. This way a year is never cut off
-    in the middle of its download.
+OpenAlex meters the API in daily credits (one list call = one credit; a free
+account key allows 10,000/day, no key only 1,000/day). The key is read from
+OPENALEX_API_KEY or ~/.openalex_api_key and is never stored in the repo. Before
+a year starts, the script checks its size against the remaining quota and sleeps
+until the midnight-UTC reset if it would not fit, so a year is never cut off
+mid-download.
 """
 
 import argparse
@@ -39,29 +29,21 @@ import time
 
 import requests
 
-# Contact email for the OpenAlex "polite pool" (faster, more reliable access).
-MAILTO = "hridanshkhaitan@gmail.com"
-
-# OpenAlex field id for "Economics, Econometrics and Finance".
+MAILTO = "hridanshkhaitan@gmail.com"   # OpenAlex "polite pool" contact
 ECONOMICS_FIELD_ID = 20
 
 API_URL = "https://api.openalex.org/works"
-PER_PAGE = 200        # Maximum works OpenAlex returns per call.
-MAX_RETRIES = 10      # Retries per page before giving up on the year.
-MAX_WAIT = 60         # Cap on backoff wait between retries (seconds).
-REQUEST_PAUSE = 0.15  # Polite pause after each successful call (seconds).
+PER_PAGE = 200        # maximum works per call
+MAX_RETRIES = 10      # retries per page before giving up on the year
+MAX_WAIT = 60         # cap on backoff between retries (seconds)
+REQUEST_PAUSE = 0.15  # pause after each successful call (seconds)
 
-# Most recent rate-limit info reported by the API (updated on every response).
+# Latest rate-limit state reported by the API, updated on every response.
 quota = {"remaining": None, "reset_seconds": None}
 
 
 def get_api_key():
-    """Return the OpenAlex API key from the environment or key file.
-
-    Looks at the OPENALEX_API_KEY environment variable first, then at the
-    file ~/.openalex_api_key. Returns an empty string if neither exists
-    (the script then runs on the small no-key quota).
-    """
+    """Return the API key from OPENALEX_API_KEY, then ~/.openalex_api_key, else ''."""
     key = os.environ.get("OPENALEX_API_KEY", "").strip()
     if key:
         return key
@@ -76,7 +58,7 @@ API_KEY = get_api_key()
 
 
 def base_params(year):
-    """Build the query parameters shared by every API call for one year."""
+    """Query parameters shared by every call for one year."""
     params = {
         "filter": f"publication_year:{year},primary_topic.field.id:fields/{ECONOMICS_FIELD_ID}",
         "mailto": MAILTO,
@@ -87,7 +69,7 @@ def base_params(year):
 
 
 def update_quota(response):
-    """Record the daily quota state from a response's rate-limit headers."""
+    """Record the daily quota from a response's rate-limit headers."""
     remaining = response.headers.get("x-ratelimit-remaining")
     reset_seconds = response.headers.get("x-ratelimit-reset")
     if remaining is not None:
@@ -97,22 +79,11 @@ def update_quota(response):
 
 
 def fetch_page(year, cursor):
-    """Fetch one page of results from the OpenAlex API.
+    """Fetch one page from the API, retrying transient failures with backoff.
 
-    Retryable failures (rate-limit 429, server 5xx, network errors) are retried
-    with exponential backoff. If the daily quota runs out mid-year despite the
-    up-front check, the server's Retry-After (time until the quota resets) is
-    honoured so the year can finish the next day.
-
-    Args:
-        year: Publication year to filter on.
-        cursor: Pagination cursor ("*" for the first page).
-
-    Returns:
-        The parsed JSON response as a dict.
-
-    Raises:
-        RuntimeError: If the page still cannot be fetched after MAX_RETRIES.
+    Rate-limit (429), server (5xx), and network errors are retried; a 429 whose
+    Retry-After signals a quota reset is waited out so the year finishes the next
+    day. Raises RuntimeError if the page still fails after MAX_RETRIES.
     """
     params = dict(base_params(year), **{"per-page": PER_PAGE, "cursor": cursor})
     wait = 2
@@ -129,7 +100,6 @@ def fetch_page(year, cursor):
         if response.status_code == 200:
             return response.json()
 
-        # 429 = rate limited, 5xx = transient server error: wait and retry.
         if response.status_code == 429 or response.status_code >= 500:
             retry_after = response.headers.get("Retry-After")
             pause = int(retry_after) if retry_after and retry_after.isdigit() else wait
@@ -141,18 +111,13 @@ def fetch_page(year, cursor):
             wait = min(wait * 2, MAX_WAIT)
             continue
 
-        # Any other 4xx is a real error (bad request etc.) -- do not retry.
-        response.raise_for_status()
+        response.raise_for_status()   # a genuine 4xx: do not retry
 
     raise RuntimeError(f"[{year}] still failing after {MAX_RETRIES} retries; aborting this year")
 
 
 def calls_needed(year):
-    """Ask the API how many works the year has and return the calls required.
-
-    Uses a cheap 1-result query to read the total count, then converts it to
-    the number of full pages needed (plus a small safety margin).
-    """
+    """Return (work count, pages required) for a year from a cheap 1-result query."""
     params = dict(base_params(year), **{"per-page": 1})
     response = requests.get(API_URL, params=params, timeout=60)
     update_quota(response)
@@ -162,11 +127,10 @@ def calls_needed(year):
 
 
 def wait_for_quota(year, needed):
-    """Sleep until the daily quota resets if the year won't fit in what's left.
+    """Sleep until the quota resets if the year would not fit in what's left today.
 
-    This prevents a year's download from being interrupted halfway through
-    when the day's credits run out (pagination cursors do not survive a long
-    overnight pause).
+    A long mid-year pause would invalidate the pagination cursor, so it is better
+    to wait for the reset before starting than to be interrupted partway.
     """
     if quota["remaining"] is None or quota["remaining"] >= needed:
         return
@@ -177,12 +141,7 @@ def wait_for_quota(year, needed):
 
 
 def extract_year(year, out_dir):
-    """Download all Economics works for one year into a gzip JSONL archive.
-
-    Args:
-        year: Publication year to download.
-        out_dir: Directory where the archive file is written.
-    """
+    """Download all Economics works for one year into a gzip JSONL archive."""
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"econ_{year}.jsonl.gz")
     done_path = os.path.join(out_dir, f"econ_{year}.done")
@@ -207,13 +166,13 @@ def extract_year(year, out_dir):
                 f.write(json.dumps(work) + "\n")
             total += len(results)
             calls += 1
-            if calls % 25 == 0:   # progress roughly every 5,000 works
+            if calls % 25 == 0:
                 print(f"[{year}] {total}/{count} works | {int(time.time() - start)}s")
             cursor = page.get("meta", {}).get("next_cursor")
-            time.sleep(REQUEST_PAUSE)   # stay comfortably within the rate limit
+            time.sleep(REQUEST_PAUSE)
 
-    # Write a completion marker only after the whole year finished cleanly. Its
-    # presence lets run_extraction.sh skip already-finished years on a re-run.
+    # Marker written only after a clean finish; run_extraction.sh skips years
+    # that already have one, so re-runs resume where they stopped.
     with open(done_path, "w") as marker:
         marker.write(f"{total}\n")
     print(f"[{year}] DONE: {total} works in {int(time.time() - start)}s -> {out_path}")
